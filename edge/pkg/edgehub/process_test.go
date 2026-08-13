@@ -417,7 +417,7 @@ func TestIfRotationDone(t *testing.T) {
 		}
 	})
 
-	t.Run("Sends to reconnectChan when receiver becomes ready", func(t *testing.T) {
+	t.Run("Drops signal to reconnectChan when receiver is not ready", func(t *testing.T) {
 		hub := &EdgeHub{
 			certManager: certificate.CertManager{
 				RotateCertificates: true,
@@ -430,11 +430,14 @@ func TestIfRotationDone(t *testing.T) {
 
 		hub.certManager.Done <- struct{}{}
 
+		// Give ifRotationDone time to process the signal and drop it
+		time.Sleep(50 * time.Millisecond)
+
 		select {
 		case <-hub.reconnectChan:
-			// Success: reconnectChan received signal when receiver read from it
-		case <-time.After(2 * time.Second):
-			t.Fatal("expected signal on reconnectChan")
+			t.Fatal("did not expect signal on reconnectChan because receiver was not ready")
+		case <-time.After(100 * time.Millisecond):
+			// Success: signal was dropped
 		}
 	})
 

@@ -158,6 +158,7 @@ func (eh *EdgeHub) ifRotationDone() {
 				case <-beehiveContext.Done():
 					return
 				case eh.reconnectChan <- struct{}{}:
+				default:
 				}
 			}
 		}
