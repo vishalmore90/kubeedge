@@ -87,23 +87,75 @@ func (dc *DownstreamController) syncDeviceModel() {
 	}
 }
 
+const DeviceModelControllerFinalizer = "kubeedge.io/devicemodel-controller"
+
 // deviceModelAdded is function to process addition of new deviceModel in apiserver
 func (dc *DownstreamController) deviceModelAdded(deviceModel *v1beta1.DeviceModel) {
-	// nothing to do when deviceModel added, only add in map
+	if deviceModel.DeletionTimestamp == nil {
+		if !controllerutil.ContainsFinalizer(deviceModel, DeviceModelControllerFinalizer) {
+			newDeviceModel := deviceModel.DeepCopy()
+			controllerutil.AddFinalizer(newDeviceModel, DeviceModelControllerFinalizer)
+			_, err := dc.crdClient.DevicesV1beta1().DeviceModels(newDeviceModel.Namespace).Update(context.Background(), newDeviceModel, metav1.UpdateOptions{})
+			if err != nil {
+				klog.Errorf("Failed to add finalizer to deviceModel %s/%s: %v", newDeviceModel.Namespace, newDeviceModel.Name, err)
+			}
+		}
+	}
+
 	deviceModelID := util.GetResourceID(deviceModel.Namespace, deviceModel.Name)
 	dc.deviceModelManager.DeviceModel.Store(deviceModelID, deviceModel)
 }
 
 // deviceModelUpdated is function to process updated deviceModel
 func (dc *DownstreamController) deviceModelUpdated(deviceModel *v1beta1.DeviceModel) {
-	// nothing to do when deviceModel updated, only add in map
+	if deviceModel.DeletionTimestamp != nil {
+		if controllerutil.ContainsFinalizer(deviceModel, DeviceModelControllerFinalizer) {
+			// Find referencing devices
+			devices, err := dc.crdClient.DevicesV1beta1().Devices(deviceModel.Namespace).List(context.Background(), metav1.ListOptions{})
+			if err != nil {
+				klog.Errorf("Failed to list devices when deleting deviceModel %s/%s: %v", deviceModel.Namespace, deviceModel.Name, err)
+				return
+			}
+			
+			hasReferencingDevices := false
+			for _, d := range devices.Items {
+				if d.Spec.DeviceModelRef.Name == deviceModel.Name {
+					err := dc.crdClient.DevicesV1beta1().Devices(d.Namespace).Delete(context.Background(), d.Name, metav1.DeleteOptions{})
+					if err != nil && !apierrors.IsNotFound(err) {
+						klog.Errorf("Failed to delete referencing device %s/%s: %v", d.Namespace, d.Name, err)
+						hasReferencingDevices = true
+					}
+				}
+			}
+			
+			// Remove finalizer once referencing devices are handled
+			if !hasReferencingDevices {
+				newDeviceModel := deviceModel.DeepCopy()
+				controllerutil.RemoveFinalizer(newDeviceModel, DeviceModelControllerFinalizer)
+				_, err = dc.crdClient.DevicesV1beta1().DeviceModels(newDeviceModel.Namespace).Update(context.Background(), newDeviceModel, metav1.UpdateOptions{})
+				if err != nil {
+					klog.Errorf("Failed to remove finalizer from deviceModel %s/%s: %v", newDeviceModel.Namespace, newDeviceModel.Name, err)
+				}
+			}
+		}
+		return
+	}
+
+	if !controllerutil.ContainsFinalizer(deviceModel, DeviceModelControllerFinalizer) {
+		newDeviceModel := deviceModel.DeepCopy()
+		controllerutil.AddFinalizer(newDeviceModel, DeviceModelControllerFinalizer)
+		_, err := dc.crdClient.DevicesV1beta1().DeviceModels(newDeviceModel.Namespace).Update(context.Background(), newDeviceModel, metav1.UpdateOptions{})
+		if err != nil {
+			klog.Errorf("Failed to add finalizer to deviceModel %s/%s: %v", newDeviceModel.Namespace, newDeviceModel.Name, err)
+		}
+	}
+
 	deviceModelID := util.GetResourceID(deviceModel.Namespace, deviceModel.Name)
 	dc.deviceModelManager.DeviceModel.Store(deviceModelID, deviceModel)
 }
 
 // deviceModelDeleted is function to process deleted deviceModel
 func (dc *DownstreamController) deviceModelDeleted(deviceModel *v1beta1.DeviceModel) {
-	// TODO: Need to use finalizer like method to delete all devices referring to this model. Need to come up with a design.
 	deviceModelID := util.GetResourceID(deviceModel.Namespace, deviceModel.Name)
 	dc.deviceModelManager.DeviceModel.Delete(deviceModelID)
 }
